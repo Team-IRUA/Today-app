@@ -323,8 +323,6 @@ with tab0:
     intro_video = find_video("소개")
     if intro_video:
         st.video(intro_video)
-    else:
-        st.info("소개 영상을 넣으려면 앱 폴더의 '영상' 폴더에 '소개.mp4' 파일을 넣고 새로고침(F5)하세요.")
     c1, c2, c3 = st.columns(3)
     c1.markdown("**① 기업이 T.O를 낸다**\n\n고민을 평문으로 쓰면 AI가 필요한 역량을 정리합니다.")
     c2.markdown("**② AI가 인재를 키운다**\n\n전공마다 다른 맞춤 강의를 AI가 만들고 가르칩니다.")
