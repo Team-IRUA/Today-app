@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 앱 이름 -->
+    <string name="app_name">T.O.DAY</string>
+    <!-- 앱이 열 주소 (Streamlit 앱 주소) -->
+    <string name="app_url" translatable="false">https://today-irua.streamlit.app</string>
+    <string name="offline_message">인터넷 연결을 확인한 뒤 다시 시도해 주세요.</string>
+</resources>
