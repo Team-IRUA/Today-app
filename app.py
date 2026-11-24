@@ -13,8 +13,9 @@ from collections import Counter
 import pandas as pd
 import streamlit as st
 
-st.set_page_config(page_title="T.O.DAY", page_icon="🎓", layout="wide")
 HERE = os.path.dirname(os.path.abspath(__file__))
+LOGO = os.path.join(HERE, "logo.png")
+st.set_page_config(page_title="T.O.DAY", page_icon=LOGO if os.path.exists(LOGO) else "🎓", layout="wide")
 
 
 # ---------------------------------------------------------------------------
@@ -146,7 +147,10 @@ def practice_for(comp):
 # 사이드바
 # ---------------------------------------------------------------------------
 with st.sidebar:
-    st.title("🎓 T.O.DAY")
+    if os.path.exists(LOGO):
+        st.image(LOGO, width=110)
+    else:
+        st.title("🎓 T.O.DAY")
     st.caption("기업이 T.O를 내는 날, AI가 인재를 키운다")
     st.divider()
     api_key = st.text_input("Claude API 키", type="password",
