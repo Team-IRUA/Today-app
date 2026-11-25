@@ -210,7 +210,79 @@ def card_label(c):
     return f"{c.get('기업명', '새 기업')} · {c.get('직무명', '')}"
 
 
-def show_card(card):
+# 생활비 비교용 기준값 (추정치, 출처는 화면에 표시). 숫자는 이 표만 고치면 앱 전체에 반영됩니다.
+COST = {
+    "서울_연봉_차이": 1000,      # 만원/년. KOSIS 2025 상용근로자 급여 기준 대구·서울 격차 약 1천만 원 이상(매일신문 2026.5.27)
+    "세후_비율": 0.87,           # 4대보험·소득세를 단순 반영한 추정
+    "월세_대구": 32,             # 만원. 국토부 실거래가 원룸 월세 중앙값(보증금 400만), 2025.12~2026.11
+    "월세_서울": 71,             # 만원. 다방 서울 원룸 평균(보증금 1,000만), 2026.3
+    "점심_대구": 0.75,           # 만원. 대구 칼국수 7천원대(참가격, 2026.3)
+    "점심_서울": 1.0,            # 만원. 서울 칼국수 1만 38원(참가격, 2026.3)
+    "통근_대구": 73.0,           # 분/일 왕복. 한국노동연구원(2019 기준)
+    "통근_서울": 90.4,           # 분/일 왕복. 수도권 평균, 같은 자료
+    "근속지원_월": 30,           # 만원. 청년일자리도약장려금 비수도권형 2년 최대 720만 원 ÷ 24개월
+}
+COST_SOURCES = ("출처: KOSIS·매일신문(임금), 국토교통부 실거래가·다방(월세), 한국소비자원 참가격(외식), "
+                "한국노동연구원(통근), 고용노동부(도약장려금). 서로 기준이 다른 통계를 합친 **추정치**입니다.")
+
+TRACK_INFO = {
+    "약정": "🤝 **약정 트랙** · 기업은 실습 전 조건부 채용을, 학생은 수료 후 일정 기간 근무를 약속해요. "
+           "정규직 채용 시 청년일자리도약장려금(기업 인건비 + 청년 근속지원)과 연계해 안내합니다.",
+    "자유": "🧭 **자유 트랙** · 채용 의무가 없어요. 학생은 탐색하고, 기업은 부담 없이 처음 참여합니다. "
+           "다른 지역을 선택해도 불이익은 없어요.",
+}
+
+
+def show_public_info(card):
+    track = card.get("트랙", "자유")
+    st.markdown(TRACK_INFO.get(track, TRACK_INFO["자유"]))
+    badge = "✅ 검증된 기업 (정보 공개 완료)" if card.get("검증기업") else "⏳ 정보 공개 진행 중"
+    rows = [
+        ("신입 연봉", f"{card['신입_연봉']:,}만 원" if card.get("신입_연봉") else "미공개"),
+        ("근무 시간", card.get("근무시간", "미공개")),
+        ("실습비 (월)", f"{card['실습비']}만 원" if card.get("실습비") else "협의"),
+        ("실습 업무 범위", card.get("업무범위", "실습계획서로 확정")),
+        ("실습생 채용 제안 이력", card.get("채용이력", "첫 참여")),
+        ("직원 수", f"{card['직원수']}명" if card.get("직원수") else "미공개"),
+    ]
+    st.markdown(f"**🔎 기업 공개 정보** · {badge}")
+    st.dataframe(pd.DataFrame(rows, columns=["항목", "내용"]), hide_index=True, width="stretch")
+    if card.get("직원수") and card["직원수"] < 5:
+        st.caption("※ 고용보험 5인 미만 기업은 청년일자리도약장려금 대상이 아니에요. 자유 트랙·구청 지원사업을 안내합니다.")
+
+
+def show_cost_compare(card, ctx):
+    base = card.get("신입_연봉") or 3000
+    with st.expander("💸 서울로 가면 한 달에 얼마나 더 남을까? (실제 차이 계산)"):
+        st.caption("결과가 서울에 유리해도 그대로 보여 줍니다. 판단은 청년이 합니다.")
+        c1, c2 = st.columns(2)
+        with c1:
+            dg = st.number_input("대구 연봉 (만원)", 1500, 15000, int(base), 100, key=f"dg_{ctx}")
+            sl = st.number_input("서울 연봉 (만원)", 1500, 20000, int(base + COST["서울_연봉_차이"]), 100,
+                                 key=f"sl_{ctx}", help="기본값: 대구 + 연 1,000만 원 (지역 평균 격차)")
+        with c2:
+            home = st.checkbox("대구에서는 본가에서 출퇴근", key=f"home_{ctx}")
+            sub = st.checkbox("대구에서 근속지원금 받음 (도약장려금, 요건 충족 시)",
+                              value=card.get("트랙") == "약정" and (card.get("직원수") or 5) >= 5, key=f"sub_{ctx}")
+        def month(pay, rent, lunch, bonus):
+            net = pay * COST["세후_비율"] / 12
+            return round(net), rent, round(lunch * 20), bonus, round(net - rent - lunch * 20 + bonus)
+        d = month(dg, 0 if home else COST["월세_대구"], COST["점심_대구"], COST["근속지원_월"] if sub else 0)
+        s_ = month(sl, COST["월세_서울"], COST["점심_서울"], 0)
+        table = pd.DataFrame({
+            "항목 (만원/월)": ["세후 월급(추정)", "월세", "점심 20회", "근속지원금", "**남는 돈**"],
+            "대구": list(d), "서울": list(s_)})
+        st.dataframe(table, hide_index=True, width="stretch")
+        gap = s_[-1] - d[-1]
+        extra_h = (COST["통근_서울"] - COST["통근_대구"]) * 22 / 60
+        if gap > 0:
+            st.info(f"서울이 한 달에 약 **{gap}만 원** 더 남아요. 대신 출퇴근에 한 달 약 **{extra_h:.0f}시간**을 더 써요.")
+        else:
+            st.success(f"대구가 한 달에 약 **{-gap}만 원** 더 남아요. 출퇴근 시간도 한 달 약 **{extra_h:.0f}시간** 아껴요.")
+        st.caption(COST_SOURCES)
+
+
+def show_card(card, ctx="card"):
     st.markdown(f"### 📌 {card.get('직무명', '')}")
     st.write(f"**기업:** {card.get('기업명', '')}  ·  **산업:** {card.get('산업', '')}")
     st.write(f"**기업 고민:** {card.get('기업_고민_요약', '')}")
@@ -221,6 +293,9 @@ def show_card(card):
     st.write("**AI가 만든 맞춤 강의 구성** (업계공통 70% + 기업맞춤 30%)")
     st.dataframe(pd.DataFrame(card.get("강의_구성", [])), hide_index=True, width="stretch")
     st.write("**추천 전공:** " + ", ".join(card.get("추천_전공", [])))
+    st.divider()
+    show_public_info(card)
+    show_cost_compare(card, ctx)
 
 
 # ---------------------------------------------------------------------------
@@ -319,18 +394,40 @@ def demo_match(card, students):
 # ---------------------------------------------------------------------------
 st.title("T.O.DAY · 대구 청년과 기업을 잇는 AI 맞춤 현장실습")
 st.caption("기업이 평문으로 T.O를 내면 → AI가 역량을 분석하고 → 맞춤 강의를 만들고 → 졸업 준비생과 매칭합니다.")
-tab0, tab1, tab2, tab3, tab4 = st.tabs(["⓪ 소개", "① T.O 게시판", "② 대구 역량 레이더", "③ AI 튜터", "④ 실습 매칭"])
+tab0, tab1, tab2, tabL, tab3, tab4, tab5 = st.tabs(["⓪ 소개", "① T.O 게시판", "② 대구 역량 레이더", "③ 강의실", "④ AI 튜터", "⑤ 실습 매칭", "⑥ 지원금 체크"])
 
 # ---------------------------------------------------------------- ⓪ 소개
 with tab0:
-    st.subheader("서울에 있고 대구에 없는 건 일자리가 아니라 '연결의 밀도'다")
+    st.subheader("산단과 대학과 거점이 한 생활권에 있는데, 서로 이어지지 않는다")
     intro_video = find_video("소개")
     if intro_video:
         st.video(intro_video)
+    st.markdown(
+        "대구 북구 노원동 **제3산업단지**는 매출이 늘어도 사람을 구하지 못합니다. 산격동 **경북대학교** 학생들은 "
+        "같은 북구의 회사를 모른 채 떠나고, 그 사이의 **도시재생·창업 거점시설**은 채울 프로그램이 부족합니다. "
+        "청년 유출은 이 '연결의 실패'의 결과입니다.")
     c1, c2, c3 = st.columns(3)
     c1.markdown("**① 기업이 T.O를 낸다**\n\n고민을 평문으로 쓰면 AI가 필요한 역량을 정리합니다.")
-    c2.markdown("**② AI가 인재를 키운다**\n\n전공마다 다른 맞춤 강의를 AI가 만들고 가르칩니다.")
-    c3.markdown("**③ 대구에서 만난다**\n\n기업 실전 실습과 거점시설 네트워크로 연결됩니다.")
+    c2.markdown("**② AI가 인재를 키운다**\n\n4학년 1학기, 그 회사 맞춤 강의를 AI가 만들고 가르칩니다.")
+    c3.markdown("**③ 대구에서 만난다**\n\n2학기 현장실습과 거점시설 프로그램으로 연결됩니다.")
+    st.info("**대상:** 대구 전역의 대학 4학년(전공 무관)과 중소기업 · **1차 실증지:** 북구 산격동·노원동 생활권 "
+            "(경북대학교 · 제3산업단지 · 경북대 혁신타운 도시재생 · 대구그린스타트업타운)")
+
+    st.markdown("#### 🗓 거점시설 프로그램 (1차 실증 계획)")
+    st.dataframe(pd.DataFrame([
+        {"프로그램": "T.O 데이", "주기": "학기 1회 (2월·8월)", "장소(협의 예정)": "대구그린스타트업타운 교육실", "내용": "기업 5분 발표 + 학생 만남"},
+        {"프로그램": "T.O 스터디", "주기": "주 1회", "장소(협의 예정)": "경북대 혁신타운 거점", "내용": "강의 복습·과제 질문"},
+        {"프로그램": "멘토 데이", "주기": "월 1회", "장소(협의 예정)": "그린스타트업타운 코워킹", "내용": "AI 기업 현직자 멘토링"},
+        {"프로그램": "성과 발표회", "주기": "연 1회 (12월)", "장소(협의 예정)": "제3산단 복합문화센터 등", "내용": "실습 프로젝트 발표·채용 연결"},
+    ]), hide_index=True, width="stretch")
+
+    st.markdown("#### 🧭 우리가 붙잡으려는 청년은 누구인가")
+    st.dataframe(pd.DataFrame([
+        {"청년": "서울이 좋아서 가는 청년", "T.O.DAY의 역할": "막지 않습니다. 대구 기업 경험은 남습니다."},
+        {"청년": "남고 싶지만 갈 곳을 못 찾은 청년", "T.O.DAY의 역할": "졸업 전에 대구 기업을 직접 겪게 합니다. (핵심 대상)"},
+        {"청년": "연봉 숫자만 보고 차이를 크게 느끼는 청년", "T.O.DAY의 역할": "생활비·근속지원까지 합친 실제 차이를 보여 줍니다."},
+    ]), hide_index=True, width="stretch")
+    st.caption("목표: 참여 청년 10명 중 6명이 대구에서 첫 직장을 갖는 것. 떠나는 것을 막지 않고, 남을 이유를 만듭니다.")
 
 # ---------------------------------------------------------------- ① T.O 게시판
 with tab1:
@@ -339,13 +436,15 @@ with tab1:
         board = pd.DataFrame([{
             "기업": c.get("기업명", ""), "찾는 인재": c.get("직무명", ""), "산업": c.get("산업", ""),
             "핵심 AI 역량": (c.get("필요_역량") or [{}])[0].get("역량", ""),
-            "추천 전공": ", ".join(c.get("추천_전공", [])[:3]), "실습 요일": c.get("실습요일", "")}
+            "추천 전공": ", ".join(c.get("추천_전공", [])[:3]), "실습 요일": c.get("실습요일", ""),
+            "트랙": c.get("트랙", "자유"), "신입 연봉(만원)": c.get("신입_연봉", ""),
+            "공개": "✅" if c.get("검증기업") else "⏳"}
             for c in all_cards()])
         st.dataframe(board, hide_index=True, width="stretch")
         st.caption("기업명은 시연용 가상 예시입니다.")
         pick = st.selectbox("자세히 볼 T.O", range(len(all_cards())), format_func=lambda i: card_label(all_cards()[i]))
         with st.expander("T.O 카드 보기", expanded=True):
-            show_card(all_cards()[pick])
+            show_card(all_cards()[pick], ctx=f"board_{pick}")
 
     st.divider()
     st.subheader("새 T.O 내기: 고민을 평문으로 적으면 AI가 T.O 카드를 만듭니다")
@@ -387,7 +486,7 @@ with tab1:
                     st.warning("AI 답을 표로 바꾸지 못했어요. 원문을 보여드릴게요.")
                     st.write(out)
         if st.session_state.get("last_card"):
-            show_card(st.session_state["last_card"])
+            show_card(st.session_state["last_card"], ctx="new")
             st.caption(DEMO_NOTICE if DEMO else AI_NOTICE)
 
 # ---------------------------------------------------------------- ② 역량 레이더
@@ -443,9 +542,129 @@ with tab2:
         st.download_button("결과 CSV 내려받기", edited.to_csv(index=False).encode("utf-8-sig"),
                            file_name="daegu_ai_radar.csv", mime="text/csv")
 
-# ---------------------------------------------------------------- ③ AI 튜터
+
+# ---------------------------------------------------------------- ③ 강의실
+def week_list(card):
+    """강의_구성의 '1~3주' 같은 구간을 주차별 수업으로 펼친다."""
+    weeks = []
+    for row in card.get("강의_구성", []):
+        nums = [int(n) for n in re.findall(r"\d+", str(row.get("주차", "")))] or [len(weeks) + 1]
+        lo, hi = nums[0], nums[-1]
+        for i, w in enumerate(range(lo, hi + 1)):
+            part = f" ({i + 1}/{hi - lo + 1})" if hi > lo else ""
+            weeks.append({"주차": w, "제목": str(row.get("내용", "")) + part, "구분": row.get("구분", "업계공통")})
+    return weeks
+
+
+def lecture_links():
+    """영상/강의목록.txt 의 '주차=주소' 줄을 읽는다. (예: 1=https://youtu.be/...)"""
+    links = {}
+    try:
+        with open(os.path.join(VIDEO_DIR, "강의목록.txt"), encoding="utf-8-sig") as f:
+            for ln in f:
+                if "=" in ln and not ln.strip().startswith("#"):
+                    k, v = ln.split("=", 1)
+                    if k.strip().isdigit() and v.strip():
+                        links[int(k.strip())] = v.strip()
+    except OSError:
+        pass
+    return links
+
+
+def demo_lesson(card, week):
+    comps = [c.get("역량", "") for c in card.get("필요_역량", [])] or ["생성형AI 업무활용"]
+    comp = comps[0] if week["구분"] == "업계공통" else comps[-1]
+    company = card.get("기업명", "이 기업")
+    if week["구분"] == "업계공통":
+        example = f"예를 들어 {card.get('산업', '대구 제조업')} 회사에서는 이 기술로 반복 문서 작업 시간을 줄입니다."
+    else:
+        example = f"{company}의 실제 고민 \"{card.get('기업_고민_요약', '')}\"에 바로 적용해 봅니다."
+    return (f"**핵심 개념** · 이번 주 주제는 '{week['제목']}'이고, 연결 역량은 **{comp}**예요.\n\n"
+            f"**왜 필요할까** · {example}\n\n"
+            f"**따라 하기** · AI에게 이렇게 요청해 보세요.\n> {practice_for(comp)}\n\n"
+            "**검증 체크리스트** · ① 숫자·사실이 원자료와 맞나요? ② 빠진 항목은 없나요? ③ 회사 기밀을 넣지 않았나요?")
+
+
+def demo_feedback(text, week):
+    n = len(text.strip())
+    good = "구체적인 사례를 넣은 점이 좋아요." if n > 80 else "핵심은 잡았어요. 사례를 한 줄 더 넣어 보세요."
+    return (f"{good} 이번 주 주제 '{week['제목']}'와 연결해 보면, AI 결과를 그대로 쓰지 않고 "
+            "**어디를 고쳤는지** 적는 습관이 중요해요. 다음 주에는 고친 이유를 한 문장으로 붙여 보세요.")
+
+
+with tabL:
+    st.subheader("③ 강의실: 4학년 1학기, 목표 기업에 맞춘 주차별 강의")
+    cards = all_cards()
+    if not cards:
+        st.warning("기업목록.json 에 T.O가 없어요.")
+    else:
+        l1, l2 = st.columns([1, 2])
+        with l1:
+            l_idx = st.selectbox("수강할 T.O 과정", range(len(cards)), format_func=lambda i: card_label(cards[i]), key="lec_to")
+            card = cards[l_idx]
+            weeks = week_list(card)
+            done_key = f"done_{card.get('기업명', '')}"
+            done = st.session_state.setdefault(done_key, set())
+            st.progress(len(done) / max(1, len(weeks)), text=f"진도 {len(done)}/{len(weeks)}주")
+            st.dataframe(pd.DataFrame([{"주차": f"{w['주차']}주", "강의": w["제목"], "구분": w["구분"],
+                                        "상태": "✅" if w["주차"] in done else "·"} for w in weeks]),
+                         hide_index=True, width="stretch", height=min(420, 38 * (len(weeks) + 1)))
+            common = sum(1 for w in weeks if w["구분"] == "업계공통")
+            st.caption(f"업계공통 {common}주 · 기업맞춤 {len(weeks) - common}주 (목표 비율 70:30)")
+        with l2:
+            w_no = st.selectbox("이번 주 강의", [w["주차"] for w in weeks],
+                                format_func=lambda n: f"{n}주차 · " + next(w["제목"] for w in weeks if w["주차"] == n),
+                                key=f"lec_week_{l_idx}")
+            week = next(w for w in weeks if w["주차"] == w_no)
+            st.markdown(f"### {w_no}주차 · {week['제목']}")
+            st.caption("🌐 업계공통 강의: 공개 강의 영상 + AI 해설" if week["구분"] == "업계공통"
+                       else f"🏭 기업맞춤 강의: {card.get('기업명', '')} 업무 자료로 AI가 만든 텍스트 강의")
+            video = lecture_links().get(w_no) or (find_video("강의") if week["구분"] == "업계공통" else None)
+            if video:
+                st.video(video)
+                st.caption("공개 강의를 쓸 때는 강의명·저작자·라이선스를 함께 표시합니다. (예: K-MOOC, MIT OCW · CC BY-NC-SA)")
+            lesson_key = f"lesson_{l_idx}_{w_no}"
+            if lesson_key not in st.session_state:
+                if DEMO:
+                    st.session_state[lesson_key] = demo_lesson(card, week)
+                elif st.button("AI로 이번 주 강의 만들기", key=f"mk_{lesson_key}"):
+                    system = ("너는 대구 중소기업 맞춤 현장실습 강의를 만드는 교수 설계자다. 한국어로 600자 안팎, "
+                              "'핵심 개념 / 왜 필요할까 / 따라 하기(AI 프롬프트 예시) / 검증 체크리스트' 네 부분으로 쓴다. "
+                              "기업이 말하지 않은 사실이나 통계는 지어내지 않는다.")
+                    body = f"T.O: {json.dumps(card, ensure_ascii=False)}\n이번 주: {week}"
+                    with st.spinner("AI가 강의를 만드는 중..."):
+                        st.session_state[lesson_key] = call_claude(system, [{"role": "user", "content": body}], max_tokens=1200)
+            if st.session_state.get(lesson_key):
+                with st.container(border=True):
+                    st.markdown(st.session_state[lesson_key])
+                st.caption(DEMO_NOTICE if DEMO else AI_NOTICE + " 기업맞춤 강의는 기업 확인 후 공개합니다.")
+
+            st.markdown("**✍️ 이번 주 과제** · 위 '따라 하기'를 해 보고, AI 답에서 고친 부분을 적어 내세요.")
+            hw = st.text_area("과제 제출", key=f"hw_{lesson_key}", height=100, label_visibility="collapsed")
+            if st.button("제출하고 수강 완료", type="primary", key=f"sub_{lesson_key}"):
+                if not hw.strip():
+                    st.warning("한 줄이라도 적어 주세요.")
+                else:
+                    if DEMO:
+                        fb = demo_feedback(hw, week)
+                    else:
+                        fb = call_claude("너는 친절한 실습 조교다. 학생 과제에 3~4문장으로 피드백한다. 칭찬 1개, 개선 1개.",
+                                         [{"role": "user", "content": f"주제: {week['제목']}\n과제: {hw}"}], max_tokens=400)
+                    done.add(w_no)
+                    st.session_state[f"fb_{lesson_key}"] = fb
+                    st.rerun()
+            if st.session_state.get(f"fb_{lesson_key}"):
+                st.success("수강 완료! 피드백: " + st.session_state[f"fb_{lesson_key}"])
+
+            if weeks and len(done) == len(weeks):
+                st.balloons()
+                st.info(f"🎓 **1학기 과정 수료** · {card.get('기업명', '')} '{card.get('직무명', '')}' 맞춤 과정\n\n"
+                        f"2학기 현장실습: {card.get('실습_기간', '')} ({card.get('실습요일', '협의')}) · "
+                        f"트랙: {card.get('트랙', '자유')} · 다음 단계는 ⑤ 실습 매칭에서 확인하세요.")
+
+# ---------------------------------------------------------------- ④ AI 튜터
 with tab3:
-    st.subheader("③ 전공과 목표 T.O에 맞춰 가르치는 대구형 AI 튜터")
+    st.subheader("④ 전공과 목표 T.O에 맞춰 가르치는 대구형 AI 튜터")
     cards = all_cards()
     c1, c2 = st.columns([1, 2])
     with c1:
@@ -466,10 +685,7 @@ with tab3:
             st.session_state["chat"] = []
             st.session_state["chat_profile"] = profile
     with c2:
-        lecture_video = find_video("강의")
-        if lecture_video:
-            with st.expander("🎬 오늘의 강의 영상", expanded=True):
-                st.video(lecture_video)
+        st.caption("주차별 강의와 과제는 ③ 강의실에서 듣고, 여기서는 튜터에게 질문해요.")
         for m in st.session_state.get("chat", []):
             with st.chat_message(m["role"]):
                 st.write(m["content"])
@@ -501,7 +717,7 @@ with tab3:
 
 # ---------------------------------------------------------------- ④ 매칭
 with tab4:
-    st.subheader("④ T.O에 맞는 졸업 준비생을 AI가 추천합니다 (결정은 사람이)")
+    st.subheader("⑤ T.O에 맞는 졸업 준비생을 AI가 추천합니다 (결정은 사람이)")
     cards = all_cards()
     if not cards:
         st.warning("기업목록.json 에 T.O가 없어요.")
@@ -509,7 +725,7 @@ with tab4:
         m_idx = st.selectbox("대상 T.O", range(len(cards)), format_func=lambda i: card_label(cards[i]), key="match_to")
         card = cards[m_idx]
         st.info(f"**{card.get('직무명', '')}** · 추천 전공: {', '.join(card.get('추천_전공', [])[:5])} · "
-                f"실습 요일: {card.get('실습요일', '협의')}")
+                f"실습 요일: {card.get('실습요일', '협의')} · 트랙: {card.get('트랙', '자유')}")
         if "students" not in st.session_state:
             path = os.path.join(HERE, "sample_students.csv")
             st.session_state["students"] = (pd.read_csv(path, encoding="utf-8-sig") if os.path.exists(path) else
@@ -536,3 +752,69 @@ with tab4:
             st.dataframe(res.head(5), hide_index=True, width="stretch",
                          column_config={"적합도": st.column_config.ProgressColumn("적합도", min_value=0, max_value=100, format="%d")})
             st.caption((DEMO_NOTICE if DEMO else AI_NOTICE) + " 상위 5명만 표시. 기업과 학생이 직접 선택합니다.")
+
+
+# ---------------------------------------------------------------- ⑤ 지원금 체크
+# 기준: 2026 청년일자리도약장려금(비수도권형) 공개 안내 요약. 매년 바뀌므로 고용24 공고로 다시 확인할 것.
+SUBSIDY_INFO = {
+    "이름": "청년일자리도약장려금 (2026, 비수도권형)",
+    "기업": "청년을 정규직으로 채용하고 6개월 이상 고용을 유지하면 인건비 지원",
+    "청년": "비수도권 참여기업에서 6개월 이상 근속하면 2년간 최대 720만 원 근속 지원",
+    "신청": "채용일로부터 3개월 이내, 고용24에서 신청 (예산 소진 시 조기 마감)",
+}
+
+with tab5:
+    st.subheader("⑥ 이 채용, 지원금 받을 수 있을까? (기업·청년 함께 확인)")
+    st.caption(f"기준: {SUBSIDY_INFO['이름']} · 요건과 금액은 매년 바뀝니다. **최종 확인은 고용24**에서 하세요.")
+
+    c1, c2 = st.columns(2)
+    with c1:
+        st.markdown("**🏭 기업 정보**")
+        region = st.selectbox("사업장 소재지", ["대구", "경북", "부산·울산·경남", "그 밖의 비수도권", "서울·경기·인천(수도권)"], key="sub_region")
+        insured = st.number_input("고용보험 가입 직원 수", min_value=0, max_value=1000, value=8, step=1, key="sub_insured")
+        regular = st.radio("채용 형태", ["정규직", "계약직·인턴"], horizontal=True, key="sub_regular")
+    with c2:
+        st.markdown("**🎓 청년 정보**")
+        age = st.number_input("청년 나이 (만)", min_value=14, max_value=45, value=24, step=1, key="sub_age")
+        hire_date = st.date_input("채용일 (예정일도 가능)", key="sub_hire")
+
+    checks = [
+        ("비수도권 사업장", region != "서울·경기·인천(수도권)", "수도권 기업은 청년 근속 지원이 없고 기업 지원 요건도 달라요."),
+        ("고용보험 5인 이상", insured >= 5, "5인 미만 기업은 대상이 아니에요. T.O.DAY 자유 트랙과 구청 지원사업을 확인해 보세요."),
+        ("정규직 채용", regular == "정규직", "정규직 채용이 기본 조건이에요. 정규직 전환을 전제로 한 채용은 운영기관에 상담하세요."),
+        ("청년 나이 만 15~34세", 15 <= age <= 34, "청년 기준 나이를 벗어나요. 병역 기간 등 예외는 운영기관에 확인하세요."),
+    ]
+    ok_all = all(ok for _, ok, _ in checks)
+
+    st.markdown("#### 자격 확인")
+    for label, ok, why in checks:
+        if ok:
+            st.success(f"✅ {label}")
+        else:
+            st.error(f"❌ {label} — {why}")
+
+    if ok_all:
+        st.info("👉 **대상일 가능성이 높아요.** 기업은 인건비, 청년은 근속 지원금을 함께 받을 수 있어요. "
+                "아래 날짜를 놓치지 마세요.")
+    else:
+        st.warning("👉 **이 조건으로는 대상이 아닐 수 있어요.** 빨간 항목을 확인하세요.")
+
+    st.markdown("#### 놓치면 안 되는 날짜")
+    h = pd.Timestamp(hire_date)
+    today = pd.Timestamp.today().normalize()
+    milestones = [
+        ("📝 신청 마감 (채용 후 3개월)", h + pd.DateOffset(months=3), "기한을 넘기면 지원금을 받을 수 없어요."),
+        ("🏁 6개월 고용 유지", h + pd.DateOffset(months=6), "6개월 미만 근속이면 기업·청년 모두 지원이 없어요."),
+        ("💰 청년 근속 지원 기간 끝 (2년)", h + pd.DateOffset(years=2), "청년 근속 지원금은 2년에 걸쳐 나눠 지급돼요."),
+    ]
+    rows = []
+    for name, d, note in milestones:
+        left = (d - today).days
+        dday = f"D-{left}" if left > 0 else ("D-DAY" if left == 0 else f"{-left}일 지남")
+        rows.append({"할 일": name, "날짜": d.strftime("%Y.%m.%d"), "남은 날": dday, "주의": note})
+    st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
+
+    with st.expander("제도 요약 보기"):
+        for k in ["기업", "청년", "신청"]:
+            st.markdown(f"- **{k}:** {SUBSIDY_INFO[k]}")
+        st.caption("T.O.DAY는 지원금을 직접 주지 않습니다. 대상 여부와 일정을 안내해 신청을 놓치지 않게 돕습니다.")
